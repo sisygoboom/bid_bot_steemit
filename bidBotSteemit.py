@@ -110,44 +110,28 @@ class bidManage:
     ### This is the mainloop for bidManage
     ### It streams transactions on the blockchain
     def stream(self):
-        t = 0
+        global nodes
         lost_connection = 0
+        lost_connection_td = datetime.datetime.now()
+        #last_block = b.get_current_block_num()
+        retry_count = 0
+        failover_count = 0
         while True:
             try:
+                retry_count = 0
+                failover_count = 0
                 for i in b.stream(filter_by=['transfer']):
                     # if bot was down, connection has resumed
-                    if t == 1:
+                    if upordown.up == False:
                         # Update JSON metadata to let steem bot tracker know bot is back online
-                        s.commit.update_account_profile(
-                            {"profile":
-                                {"cover_image":"",
-                                 "profile_image":"",
-                                 "name":"",
-                                 "about":"Send at least " + str(min_bid) + "SBD/STEEM for a share of our 100% upvote every 2.4 hours.",
-                                 "location":"Undisclosed",
-                                 "website":"https://steembottracker.com/"},
-                                 "config":
-                                     {"min_bid_sbd":min_bid,
-                                      "min_bid_steem":min_bid,
-                                      "bid_window":2.4,
-                                      "comments":"true",
-                                      "posts_comment":"true",
-                                      "refunds":"true",
-                                      "accepts_steem":"true",
-                                      "funding_url":"",
-                                      "tags":"",
-                                      "api_url":"", # SBT will soon be requiring a bid API, to provide this, you should host the "data" file on a server
-                                      "max_post_age":"4",
-                                      "min_post_age":"0",
-                                      "is_disabled":"false"}},
-                                    acc_name)
+                        upordown.setJSONMeta(True)
                         # record downtime in minutes and time when we got back online
                         now = datetime.datetime.now()
                         diff = time.time() - lost_connection
-                        print("out for " + str(diff/60) + str(now))
+                        timeout_string = str(diff/60) + " from " + lost_connection_td + " until " + str(now)
+                        print("out for " + timeout_string)
                         with open("downtime.log","a+") as logfile:
-                            logfile.write(str(diff/60) + str(now))
-                        t = 0
+                            logfile.write(timeout_string)
                         
                     # If bid is to the bot
                     if i['to'] == acc_name:
@@ -168,41 +152,34 @@ class bidManage:
                         # if a dictionary is returned, we have a valid bid
                         if type(refund) == dict:
                             #add the bid to earnings and the bidding data
+                            print(refund['amount'])
                             earn.add(refund['amount'],refund['currency'])
                             self.enqueue(refund)
+                            
             except Exception as e:
                 print(e)
-                # This will only happen when connection to the stream is lost
-                if t == 0:
+                print(" Exception 1")
+                
+                if upordown.up == True:
                     # Updates the bots JSON metadata so steem bot tracker knows it is offline
-                    s.commit.update_account_profile(
-                            {"profile":
-                                {"cover_image":"",
-                                 "profile_image":"",
-                                 "name": acc_name + " Is Currently Down",
-                                 "about":"Bids currently not being accepted.",
-                                 "location":"",
-                                 "website":"https://steembottracker.com/"},
-                                 "config":
-                                     {"min_bid_sbd":min_bid,
-                                      "min_bid_steem":min_bid,
-                                      "bid_window":2.4,
-                                      "comments":"true",
-                                      "posts_comment":"true",
-                                      "refunds":"true",
-                                      "accepts_steem":"true",
-                                      "funding_url":"",
-                                      "tags":"",
-                                      "api_url":"",
-                                      "max_post_age":"4",
-                                      "min_post_age":"0",
-                                      "is_disabled":"true"}},
-                                    acc_name)
-                    t = 1
+                    upordown.setJSONMeta(False)
                     # record start of downtime
                     lost_connection = time.time()
+                    lost_connection_td = datetime.datetime.now()
+                
+                if failover_count < len(nodes):
+                    nodes = nodes[1:] + nodes[:1]
+                    failover_count += 1
+                    continue
+                
+                retry_count += 1
+                if retry_count == 2:
+                    retry_count = 0
+                    nodes = nodes[1:] + nodes[:1]
+                    # This will only happen when connection to the stream is lost
+                        
                 #prevent ddos'ing
-                sleep(30)
+                sleep(180)
 
 ### verify a transaction to make sure it can be bid on, called whenever a new
 ### bid is recieved.
@@ -374,30 +351,93 @@ def sweep(all_votes):
         
         # vote on post
         try: subject.vote(weight, voter=acc_name)
-        except Exception as e: print(e)
+        except Exception as e:
+            print(e)
+            print(" Exception2")
         
         #leave a comment on the post
         try: subject.reply("You recieved a " + str(round(weight,3)) + 
                            "% upvote from @" + data['sender'] + "!",
                            "", acc_name)
-        except Exception as e: print(e)
+        except Exception as e:
+            print(e)
+            print(" Exception 3")
         #any faster than 20s and you'd be ddos'ing the server
         sleep(22)
-
-
-
+        
 ##############################################################
 ### This is all customiseable data and depends on your bot ###
 ##############################################################
-nodes = ['https://api.steemit.com',
+### This procedure changes the account JSON data to let users know whether it
+### is on or off. Pass True for on and False for off.
+class acc:
+    def __init__(self):
+        self.up = True
+    def setJSONMeta(self, on):
+        if on == True:
+            s.commit.update_account_profile(
+            {"profile":
+                {"cover_image":"https://i.imgur.com/UoAuSO2.png",
+                 "profile_image":"https://i.imgur.com/FE2IyHE.png",
+                 "name":"Steem Roasted",
+                 "about":"Bidbot. Send STEEM or SBD with a link to the post and \
+                 we'll upvote the post! Minimum bid is " + str(min_bid) + 
+                 ". Automatic refunds. 100% payouts to delegators.",
+                 "location":"Undisclosed",
+                 "website":"https://discord.gg/MHzUVN"},
+                 "config":
+                     {"min_bid_sbd":min_bid,
+                      "min_bid_steem":min_bid,
+                      "bid_window":2.4,
+                      "comments":"true",
+                      "posts_comment":"true",
+                      "refunds":"true",
+                      "accepts_steem":"true",
+                      "funding_url":"",
+                      "tags":"",
+                      "api_url":"",
+                      "max_post_age":max_age,
+                      "min_post_age":min_age,
+                      "is_disabled":"false"}},
+                    acc_name)
+        if on == False:
+            s.commit.update_account_profile(
+            {"profile":
+                {"cover_image":"https://i.imgur.com/UoAuSO2.png",
+                 "profile_image":"https://i.imgur.com/FE2IyHE.png",
+                 "name":"Steem Roasted Is Down",
+                 "about":"Any funds sent might not be bidded on in the next \
+                 immediate round but bids are still being accepted.",
+                 "location":"Undisclosed",
+                 "website":"https://discord.gg/MHzUVN"},
+                 "config":
+                     {"min_bid_sbd":min_bid,
+                      "min_bid_steem":min_bid,
+                      "bid_window":2.4,
+                      "comments":"true",
+                      "posts_comment":"true",
+                      "refunds":"true",
+                      "accepts_steem":"true",
+                      "funding_url":"",
+                      "tags":"",
+                      "api_url":"",
+                      "max_post_age":max_age,
+                      "min_post_age":min_age,
+                      "is_disabled":"false"}},
+                    acc_name)
+        self.up = on
+    
+
+keys = ['PRIVATE_POSTING_KEY',
+        'PRIVATE_ACTIVE_KEY']
+
+nodes = ['https://rpc.buildteam.io',
+         'https://api.steemit.com',
          'https://steemd.steemitstage.com/',
          'https://gtg.steem.house:8090',
          'https://steemd.steemgigs.org']
 
-keys = ['PRIVATE_POSTING_KEY_HERE',
-        'PRIVATE_ACTIVE_KEY_HERE']
-
-dirLoc = 'DIRECTORY_TO_STORE_API_DATA'
+dirLoc = 'C:\\your\\hosting\\directory'
 
 # Initialise the classes
 set_shared_steemd_instance(Steemd(nodes=nodes))
@@ -406,9 +446,10 @@ b = Blockchain()
 c = Converter()
 earn = earnings()
 bidM = bidManage()
+upordown = acc()
 
-acc_name = 'STEEMIT_ACCOUNT_NAME'
-min_bid = 0.01
+acc_name = 'ACCOUNT_NAME'
+min_bid = 0.05
 payout_percent = 1 #1=100%, 0.5=50%
 min_delegation = 20
 max_age = 4 #days
@@ -420,34 +461,12 @@ acc = Account(acc_name)
 ip = socket.gethostbyname(socket.gethostname())
 api = "https://" + ip + "/data"
 
-# update account metadata to let steem bot tracker know the bot is online
-s.commit.update_account_profile(
-        {"profile":
-            {"cover_image":"",
-             "profile_image":"",
-             "name":"",
-             "about":"Send at least " + str(min_bid) + "SBD/STEEM for a share of our 100% upvote every 2.4 hours.",
-             "location":"Undisclosed",
-             "website":"https://steembottracker.com/"},
-             "config":
-                 {"min_bid_sbd":min_bid,
-                  "min_bid_steem":min_bid,
-                  "bid_window":2.4,
-                  "comments":"true",
-                  "posts_comment":"true",
-                  "refunds":"true",
-                  "accepts_steem":"true",
-                  "funding_url":"",
-                  "tags":"",
-                  "api_url":"", # SBT will soon be requiring a bid API, to provide this, you should host the "data" file on a server
-                  "max_post_age":"4",
-                  "min_post_age":"0",
-                  "is_disabled":"false"}},
-                acc_name)
-
 ##############################################################
 ### This is all customiseable data and depends on your bot ###
 ##############################################################
+
+# update account metadata to let steem bot tracker know the bot is online
+upordown.setJSONMeta(True)
     
 # Start the main loops
 countloop = Thread(target=earn.counter)
